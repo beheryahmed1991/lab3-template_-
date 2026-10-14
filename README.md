@@ -102,6 +102,24 @@ Wait for Loyalty to become healthy and for the breaker timeout to expire, then
 repeat the GET. Expect 200 once the service has recovered. Gateway logs show
 when the circuit opens and when a successful probe closes it.
 
-Fallback data for optional dependencies and retrying canceled-booking loyalty
-updates are the next implementation steps. The complete instructor failover
+Retrying canceled-booking loyalty
+updates is the next implementation step. The complete instructor failover
 scenario should be run after those steps are implemented.
+
+## Optional data fallback
+
+GET /api/v1/reservations and GET /api/v1/reservations/{reservationUid} return
+HTTP 200 with payment: {} when the Payment read fails or its circuit is open.
+GET /api/v1/me also returns loyalty: {} when the Loyalty read fails. Successfully
+fetched reservation and hotel fields are retained. Failed decodes discard partial
+optional values. Valid zero prices, discounts and counters remain in normal responses.
+
+Reservation and hotel reads remain required. A direct GET /api/v1/loyalty still
+returns an error when Loyalty is unavailable: there is no primary data to return.
+This fallback applies to reads; it does not turn failed bookings or cancellations
+into successful operations.
+
+After rebuilding Gateway, create a booking, stop payment-service, and GET the
+booking again. Expect 200 and payment: {}. Start payment-service afterward and
+allow the circuit timeout to expire. Likewise stop loyalty-service and GET
+/api/v1/me; reservations should remain available with loyalty: {}.

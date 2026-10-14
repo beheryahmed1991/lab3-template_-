@@ -35,8 +35,7 @@ func (client bookingClient) getUserInfo(w http.ResponseWriter, r *http.Request) 
 	var loyalty loyaltyInfo
 	if err := client.call(ctx, http.MethodGet, client.loyaltyURL, "/api/v1/loyalty", username, nil, &loyalty); err != nil {
 		log.Printf("Read user loyalty: %v", err)
-		gatewayError(w, http.StatusServiceUnavailable, "Loyalty Service unavailable")
-		return
+		loyalty = loyaltyInfo{}
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	if err := json.NewEncoder(w).Encode(userInfo{reservations, loyalty}); err != nil {

@@ -445,6 +445,7 @@ components:
           $ref: "#/components/schemas/PaymentInfo"
 
     PaymentInfo:
+      description: Payment details; reservation reads return an empty object when Payment Service is unavailable.
       type: object
       example:
         {
@@ -464,6 +465,7 @@ components:
           description: Сумма операции
 
     LoyaltyInfoResponse:
+      description: Loyalty details; GET /api/v1/me returns an empty object when Loyalty Service is unavailable.
       type: object
       example:
         {

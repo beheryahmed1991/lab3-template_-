@@ -69,7 +69,8 @@ func (client bookingClient) enrichReservation(ctx context.Context, reservation i
 	}
 	var payment bookingPayment
 	if err := client.call(ctx, http.MethodGet, client.paymentURL, "/api/v1/payments/"+reservation.PaymentUID, "", nil, &payment); err != nil {
-		return reservationInfo{}, fmt.Errorf("load payment: %w", err)
+		log.Printf("Payment fallback for reservation %s: %v", reservation.ReservationUID, err)
+		payment = bookingPayment{}
 	}
 	payment.UID = ""
 	return reservationInfo{reservation.ReservationUID, hotel, reservation.StartDate, reservation.EndDate, reservation.Status, payment}, nil

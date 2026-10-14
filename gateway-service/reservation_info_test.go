@@ -25,8 +25,8 @@ func TestGatewayReservationInfo(t *testing.T) {
 		{"wrong owner list", "/api/v1/reservations", "owner", 503, 0, 0},
 		{"reservation unavailable", "/api/v1/reservations/" + bookingReservationUID, "reservation", 503, 0, 0},
 		{"hotel unavailable", "/api/v1/reservations/" + bookingReservationUID, "hotel", 503, 1, 0},
-		{"payment unavailable", "/api/v1/reservations/" + bookingReservationUID, "payment", 503, 1, 1},
-		{"list payment unavailable", "/api/v1/reservations", "payment", 503, 1, 1},
+		{"payment unavailable", "/api/v1/reservations/" + bookingReservationUID, "payment", 200, 1, 1},
+		{"list payment unavailable", "/api/v1/reservations", "payment", 200, 1, 2},
 		{"malformed reservation", "/api/v1/reservations/" + bookingReservationUID, "malformed", 503, 0, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,6 +108,13 @@ func TestGatewayReservationInfo(t *testing.T) {
 			if strings.Contains(response.Body.String(), "paymentUid") || strings.Contains(response.Body.String(), "username") {
 				t.Fatal("internal fields exposed")
 			}
+			expected := want
+			if tc.fail == "payment" {
+				expected.Payment = bookingPayment{}
+				if !strings.Contains(response.Body.String(), `"payment":{}`) {
+					t.Fatal("payment fallback must be an empty object")
+				}
+			}
 			if tc.path == "/api/v1/reservations" {
 				var got []reservationInfo
 				if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
@@ -119,9 +126,9 @@ func TestGatewayReservationInfo(t *testing.T) {
 					}
 					return
 				}
-				second := want
+				second := expected
 				second.ReservationUID = "a0425f4b-9211-4d95-8060-de6081400740"
-				if !reflect.DeepEqual(got, []reservationInfo{want, second}) {
+				if !reflect.DeepEqual(got, []reservationInfo{expected, second}) {
 					t.Fatalf("list = %+v", got)
 				}
 			} else {
@@ -129,7 +136,7 @@ func TestGatewayReservationInfo(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &got); err != nil {
 					t.Fatal(err)
 				}
-				if !reflect.DeepEqual(got, want) {
+				if !reflect.DeepEqual(got, expected) {
 					t.Fatalf("reservation = %+v, want %+v", got, want)
 				}
 			}

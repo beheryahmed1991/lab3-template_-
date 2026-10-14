@@ -18,9 +18,9 @@ func TestGatewayUserInfo(t *testing.T) {
 		{"success", "", "Test Max", false, 200},
 		{"new user", "", "New User", true, 200},
 		{"reservation unavailable", "reservations", "Test Max", false, 503},
-		{"payment unavailable", "payment", "Test Max", false, 503},
-		{"loyalty unavailable", "loyalty", "Test Max", false, 503},
-		{"malformed loyalty", "malformed", "Test Max", false, 503},
+		{"payment unavailable", "payment", "Test Max", false, 200},
+		{"loyalty unavailable", "loyalty", "Test Max", false, 200},
+		{"malformed loyalty", "malformed", "Test Max", false, 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			loyaltyCalls := 0
@@ -86,7 +86,7 @@ func TestGatewayUserInfo(t *testing.T) {
 			if response.Code != tc.status {
 				t.Fatalf("status = %d, want %d: %s", response.Code, tc.status, response.Body.String())
 			}
-			if (tc.fail == "reservations" || tc.fail == "payment") && loyaltyCalls != 0 {
+			if tc.fail == "reservations" && loyaltyCalls != 0 {
 				t.Fatal("requested loyalty after reservation failure")
 			}
 			if tc.status != 200 {
@@ -106,6 +106,18 @@ func TestGatewayUserInfo(t *testing.T) {
 			} else {
 				stars := 5
 				want := userInfo{[]reservationInfo{{bookingReservationUID, hotelInfo{bookingHotelUID, "Ararat Park Hyatt Moscow", "Россия, Москва, Неглинная ул., 4", &stars}, "2026-10-10", "2026-10-13", "CANCELED", bookingPayment{Status: "CANCELED", Price: 27000}}}, loyaltyInfo{"GOLD", 10, 25}}
+				if tc.fail == "payment" {
+					want.Reservations[0].Payment = bookingPayment{}
+					if !strings.Contains(response.Body.String(), `"payment":{}`) {
+						t.Fatal("payment fallback must be an empty object")
+					}
+				}
+				if tc.fail == "loyalty" || tc.fail == "malformed" {
+					want.Loyalty = loyaltyInfo{}
+					if !strings.Contains(response.Body.String(), `"loyalty":{}`) {
+						t.Fatal("loyalty fallback must be an empty object")
+					}
+				}
 				if !reflect.DeepEqual(got, want) {
 					t.Fatalf("user information = %+v, want %+v", got, want)
 				}
