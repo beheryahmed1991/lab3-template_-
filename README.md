@@ -70,3 +70,38 @@
 2. [Hotels Booking System](v2/README.md)
 3. [Car Rental System](v3/README.md)
 4. [Library System](v4/README.md)
+
+## Gateway read Circuit Breaker
+
+All outgoing GET and HEAD requests share an in-memory Circuit Breaker transport,
+with independent state for each downstream service URL. This includes both
+reverse-proxy endpoints and the reads used to assemble reservations and user data.
+
+- Closed: requests reach the service; three consecutive network failures or HTTP
+  5xx responses open its circuit. HTTP 4xx responses do not count as outages.
+- Open: subsequent reads fail immediately for 10 seconds, using the existing
+  Gateway unavailable response. No request reaches that service.
+- Half-open: after the timeout, one read probes the service. Success closes the
+  circuit; failure starts another 10-second wait. Concurrent probes are rejected.
+
+State is protected by mutexes. Older in-flight responses cannot close a newly
+opened circuit. Writes bypass the read breaker. State resets when Gateway restarts.
+The constants are in `gateway-service/circuit_breaker.go`.
+
+Manual check (from the repository root):
+
+```powershell
+docker compose up -d --build gateway-service
+docker compose stop loyalty-service
+1..4 | ForEach-Object { curl.exe -i -H "X-User-Name: Test Max" http://localhost:8080/api/v1/loyalty }
+docker compose logs --tail 30 gateway-service
+docker compose start loyalty-service
+```
+
+Wait for Loyalty to become healthy and for the breaker timeout to expire, then
+repeat the GET. Expect 200 once the service has recovered. Gateway logs show
+when the circuit opens and when a successful probe closes it.
+
+Fallback data for optional dependencies and retrying canceled-booking loyalty
+updates are the next implementation steps. The complete instructor failover
+scenario should be run after those steps are implemented.

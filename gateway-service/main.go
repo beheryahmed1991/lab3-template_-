@@ -45,7 +45,10 @@ func newGatewayHandler(reservationURL, loyaltyURL, paymentURL string) (http.Hand
 	if _, err := newServiceProxy(paymentURL, "PAYMENT_SERVICE_URL", "Payment Service"); err != nil {
 		return nil, err
 	}
-	client := bookingClient{reservationURL: reservationURL, loyaltyURL: loyaltyURL, paymentURL: paymentURL, http: &http.Client{Timeout: 6 * time.Second}}
+	transport := newReadBreakerTransport(nil)
+	reservationProxy.Transport = transport
+	loyaltyProxy.Transport = transport
+	client := bookingClient{reservationURL: reservationURL, loyaltyURL: loyaltyURL, paymentURL: paymentURL, http: &http.Client{Timeout: 6 * time.Second, Transport: transport}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/reservations", client.createBooking)
 	mux.HandleFunc("GET /api/v1/reservations", client.listBookingInfo)
