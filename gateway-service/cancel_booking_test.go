@@ -16,14 +16,14 @@ func TestGatewayCancellationWorkflow(t *testing.T) {
 		status     int
 		want       []string
 	}{
-		{"success", "", 204, []string{"read", "payment", "decrement", "cancel"}},
+		{"success", "", 204, []string{"read", "payment", "cancel", "decrement"}},
 		{"other owner", "owner", 404, []string{"read"}},
 		{"missing reservation", "missing", 404, []string{"read"}},
 		{"read failure", "read", 503, []string{"read"}},
 		{"payment failure", "payment", 503, []string{"read", "payment"}},
-		{"loyalty failure", "decrement", 503, []string{"read", "payment", "decrement"}},
-		{"reservation failure", "cancel", 503, []string{"read", "payment", "decrement", "cancel", "read", "restore"}},
-		{"lost cancel response", "lost response", 204, []string{"read", "payment", "decrement", "cancel", "read"}},
+		{"loyalty failure", "decrement", 204, []string{"read", "payment", "cancel", "decrement"}},
+		{"reservation failure", "cancel", 503, []string{"read", "payment", "cancel", "read"}},
+		{"lost cancel response", "lost response", 204, []string{"read", "payment", "cancel", "read", "decrement"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
@@ -95,6 +95,7 @@ func TestGatewayCancellationWorkflow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			defer handler.(*gatewayHandler).Close()
 			req := httptest.NewRequest(http.MethodDelete, "/api/v1/reservations/"+bookingReservationUID, nil)
 			req.Header.Set("X-User-Name", "Test Max")
 			response := httptest.NewRecorder()
@@ -106,13 +107,17 @@ func TestGatewayCancellationWorkflow(t *testing.T) {
 				t.Fatalf("calls = %v, want %v", calls, tc.want)
 			}
 			if tc.status == 204 {
-				if count != 25 || state != "CANCELED" || !paymentCanceled || response.Body.Len() != 0 {
+				wantCount := 25
+				if tc.fail == "decrement" {
+					wantCount = 26
+				}
+				if count != wantCount || state != "CANCELED" || !paymentCanceled || response.Body.Len() != 0 {
 					t.Fatalf("count=%d state=%s paymentCanceled=%v", count, state, paymentCanceled)
 				}
 				calls = nil
 				again := httptest.NewRecorder()
 				handler.ServeHTTP(again, req.Clone(req.Context()))
-				if again.Code != 204 || count != 25 || !reflect.DeepEqual(calls, []string{"read"}) {
+				if again.Code != 204 || count != wantCount || !reflect.DeepEqual(calls, []string{"read"}) {
 					t.Fatalf("repeat: status=%d count=%d calls=%v", again.Code, count, calls)
 				}
 			} else if count != 26 || state != "PAID" {

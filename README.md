@@ -102,9 +102,8 @@ Wait for Loyalty to become healthy and for the breaker timeout to expire, then
 repeat the GET. Expect 200 once the service has recovered. Gateway logs show
 when the circuit opens and when a successful probe closes it.
 
-Retrying canceled-booking loyalty
-updates is the next implementation step. The complete instructor failover
-scenario should be run after those steps are implemented.
+Canceled-booking loyalty updates now use the retry queue described below.
+The complete instructor failover scenario still needs to be run against Docker.
 
 ## Optional data fallback
 
@@ -123,3 +122,34 @@ After rebuilding Gateway, create a booking, stop payment-service, and GET the
 booking again. Expect 200 and payment: {}. Start payment-service afterward and
 allow the circuit timeout to expire. Likewise stop loyalty-service and GET
 /api/v1/me; reservations should remain available with loyalty: {}.
+
+
+## Cancellation retry queue
+
+Gateway cancels payment and reservation, then decrements loyalty. If Loyalty
+fails, cancellation still returns 204 and an in-memory job retries every 10
+seconds until a successful response. Duplicate cancellation requests do not
+enqueue additional jobs. Pending jobs are lost if Gateway restarts.
+
+Each attempt sends the same Idempotency-Key (cancel:<reservation UUID>).
+Loyalty stores the operation receipt and the counter update in one PostgreSQL
+transaction, preventing a duplicate decrement when an earlier response was lost.
+The loyalty_updates table stores receipts only; queued jobs live in Gateway RAM.
+
+For an existing database volume, apply the additional table before rebuilding:
+
+```powershell
+docker compose exec postgres psql -U postgres -d postgres -v ON_ERROR_STOP=1 -f /docker-entrypoint-initdb.d/60-loyalty-idempotency.sql
+docker compose up -d --build gateway-service loyalty-service
+```
+
+To check: create a booking and note its UUID and loyalty count, stop
+loyalty-service, DELETE /api/v1/reservations/<UUID> with X-User-Name, and expect
+204. Start Loyalty again; within the next retry cycle its count should decrease
+once. Gateway logs contain Queued loyalty update and Completed queued loyalty
+update. Keep Gateway running during this test.
+
+The PostgreSQL integration test uses a temporary username and cleans up its own
+records. From loyalty-service, set LOYALTY_TEST_DATABASE_URL to a migrated test
+database with cleanup permissions, then run the Go tests. Without that variable
+the integration test is skipped; the HTTP and worker unit tests still run.

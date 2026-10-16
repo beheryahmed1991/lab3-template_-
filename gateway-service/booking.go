@@ -99,6 +99,10 @@ func bookingPrice(nights, nightly int64, discount int) (int64, error) {
 }
 
 func (client bookingClient) call(ctx context.Context, method, base, path, username string, input, output any) error {
+	return client.callWithKey(ctx, method, base, path, username, input, output, "")
+}
+
+func (client bookingClient) callWithKey(ctx context.Context, method, base, path, username string, input, output any, key string) error {
 	endpoint, err := url.JoinPath(base, path)
 	if err != nil {
 		return err
@@ -120,6 +124,9 @@ func (client bookingClient) call(ctx context.Context, method, base, path, userna
 	}
 	if input != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
 	}
 	response, err := client.http.Do(req)
 	if err != nil {

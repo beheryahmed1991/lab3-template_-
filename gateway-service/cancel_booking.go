@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 )
 
-func (client bookingClient) cancelBookingHandler() http.HandlerFunc {
+func (client bookingClient) cancelBookingHandler(retries *loyaltyRetryQueue) http.HandlerFunc {
 	// Serialize cancellation of the same UUID in this Gateway process.
 	// Fixed lock buckets avoid retaining a mutex for every reservation forever.
 	var locks [64]sync.Mutex
@@ -67,31 +67,28 @@ func (client bookingClient) cancelBookingHandler() http.HandlerFunc {
 			gatewayError(w, 503, "Unable to cancel payment")
 			return
 		}
-		if err := client.call(operationCtx, http.MethodPatch, client.loyaltyURL, "/api/v1/loyalty", username, map[string]int{"reservationCountChange": -1}, nil); err != nil {
-			gatewayError(w, 503, "Unable to update loyalty")
-			return
-		}
+		// Cancel the reservation before touching loyalty, so a failed cancellation
+		// cannot reduce the user's counter. Confirm an ambiguous DELETE response.
 		if err := client.call(operationCtx, http.MethodDelete, client.reservationURL, path, username, nil, nil); err != nil {
-			// Check whether the update committed but its response was lost.
 			var current struct {
 				Status string `json:"status"`
 			}
 			recoveryCtx, recoveryCancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer recoveryCancel()
 			readErr := client.call(recoveryCtx, http.MethodGet, client.reservationURL, path, username, nil, &current)
-			if readErr == nil && current.Status == "CANCELED" {
-				w.WriteHeader(http.StatusNoContent)
+			if readErr != nil || current.Status != "CANCELED" {
+				log.Printf("Unable to confirm cancellation for %s: %v", uid, readErr)
+				gatewayError(w, 503, "Unable to cancel reservation")
 				return
 			}
-			if readErr == nil && current.Status == "PAID" {
-				if restoreErr := client.call(recoveryCtx, http.MethodPatch, client.loyaltyURL, "/api/v1/loyalty", username, map[string]int{"reservationCountChange": 1}, nil); restoreErr != nil {
-					log.Printf("Restore loyalty after cancellation failure for %s: %v", uid, restoreErr)
-				}
-			} else {
-				log.Printf("Uncertain cancellation state for %s: %v", uid, readErr)
+		}
+		job := loyaltyRetryJob{username: username, reservationUID: uid}
+		if err := client.decrementLoyalty(operationCtx, job); err != nil {
+			log.Printf("Deferring loyalty update for %s: %v", uid, err)
+			if err := retries.enqueue(job); err != nil {
+				gatewayError(w, 503, "Unable to queue loyalty update")
+				return
 			}
-			gatewayError(w, 503, "Unable to cancel reservation")
-			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}

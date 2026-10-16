@@ -23,6 +23,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	defer handler.(*gatewayHandler).Close()
 	server := &http.Server{
 		Addr:              ":8080",
 		Handler:           handler,
@@ -49,18 +50,19 @@ func newGatewayHandler(reservationURL, loyaltyURL, paymentURL string) (http.Hand
 	reservationProxy.Transport = transport
 	loyaltyProxy.Transport = transport
 	client := bookingClient{reservationURL: reservationURL, loyaltyURL: loyaltyURL, paymentURL: paymentURL, http: &http.Client{Timeout: 6 * time.Second, Transport: transport}}
+	retries := newLoyaltyRetryQueue(client, loyaltyRetryInterval)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/v1/reservations", client.createBooking)
 	mux.HandleFunc("GET /api/v1/reservations", client.listBookingInfo)
 	mux.HandleFunc("GET /api/v1/me", client.getUserInfo)
 	mux.HandleFunc("GET /api/v1/reservations/{reservationUid}", client.getBookingInfo)
-	mux.HandleFunc("DELETE /api/v1/reservations/{reservationUid}", client.cancelBookingHandler())
+	mux.HandleFunc("DELETE /api/v1/reservations/{reservationUid}", client.cancelBookingHandler(retries))
 	mux.HandleFunc("GET /manage/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("GET /api/v1/hotels", proxyWithTimeout(reservationProxy))
 	mux.HandleFunc("GET /api/v1/loyalty", proxyWithTimeout(loyaltyProxy))
-	return mux, nil
+	return &gatewayHandler{Handler: mux, retries: retries}, nil
 }
 
 func newServiceProxy(serviceURL, variable, serviceName string) (*httputil.ReverseProxy, error) {

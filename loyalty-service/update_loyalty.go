@@ -3,17 +3,26 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type loyaltyUpdater interface {
 	UpdateLoyalty(context.Context, string, int) (Loyalty, error)
 }
+
+type idempotentLoyaltyUpdater interface {
+	UpdateLoyaltyOnce(context.Context, string, int, string) (Loyalty, error)
+}
+
+var errOperationConflict = errors.New("idempotency key was already used for another update")
 
 func loyaltyForCount(count int) Loyalty {
 	if count < 0 {
@@ -31,11 +40,44 @@ func loyaltyForCount(count int) Loyalty {
 }
 
 func (store postgresLoyaltyStore) UpdateLoyalty(ctx context.Context, username string, change int) (Loyalty, error) {
+	return store.updateLoyalty(ctx, username, change, "")
+}
+
+func (store postgresLoyaltyStore) UpdateLoyaltyOnce(ctx context.Context, username string, change int, key string) (Loyalty, error) {
+	return store.updateLoyalty(ctx, username, change, key)
+}
+
+func (store postgresLoyaltyStore) updateLoyalty(ctx context.Context, username string, change int, key string) (Loyalty, error) {
 	tx, err := store.pool.Begin(ctx)
 	if err != nil {
 		return Loyalty{}, err
 	}
 	defer tx.Rollback(context.Background())
+	if key != "" {
+		// The operation record and counter change commit atomically. A concurrent
+		// duplicate INSERT waits for the first transaction before reading its record.
+		tag, err := tx.Exec(ctx, `INSERT INTO loyalty_updates (operation_key, username, change)
+            VALUES ($1, $2, $3) ON CONFLICT (operation_key) DO NOTHING`, key, username, change)
+		if err != nil {
+			return Loyalty{}, err
+		}
+		if tag.RowsAffected() == 0 {
+			var previousUser string
+			var previousChange int
+			if err := tx.QueryRow(ctx, "SELECT username, change FROM loyalty_updates WHERE operation_key = $1", key).Scan(&previousUser, &previousChange); err != nil {
+				return Loyalty{}, err
+			}
+			if previousUser != username || previousChange != change {
+				return Loyalty{}, errOperationConflict
+			}
+			var result Loyalty
+			err := tx.QueryRow(ctx, "SELECT status, discount, reservation_count FROM loyalty WHERE username = $1", username).Scan(&result.Status, &result.Discount, &result.ReservationCount)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return Loyalty{}, errors.New("loyalty operation has no matching user")
+			}
+			return result, err
+		}
+	}
 	var count int
 	// The upsert locks this user's row until commit, preserving concurrent updates.
 	err = tx.QueryRow(ctx, `
@@ -66,6 +108,11 @@ func updateLoyaltyHandler(store loyaltyUpdater) http.HandlerFunc {
 			loyaltyError(w, 400, "X-User-Name is required and must contain at most 80 characters")
 			return
 		}
+		key := r.Header.Get("Idempotency-Key")
+		if len(key) > 128 || strings.TrimSpace(key) != key {
+			loyaltyError(w, 400, "Invalid Idempotency-Key")
+			return
+		}
 		r.Body = http.MaxBytesReader(w, r.Body, 4096)
 		defer r.Body.Close()
 		decoder := json.NewDecoder(r.Body)
@@ -87,7 +134,19 @@ func updateLoyaltyHandler(store loyaltyUpdater) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 		defer cancel()
-		result, err := store.UpdateLoyalty(ctx, username, *request.Change)
+		var result Loyalty
+		var err error
+		if key == "" {
+			result, err = store.UpdateLoyalty(ctx, username, *request.Change)
+		} else if once, ok := store.(idempotentLoyaltyUpdater); ok {
+			result, err = once.UpdateLoyaltyOnce(ctx, username, *request.Change, key)
+		} else {
+			err = errors.New("store does not support idempotent updates")
+		}
+		if errors.Is(err, errOperationConflict) {
+			loyaltyError(w, 409, "Idempotency-Key already used for another update")
+			return
+		}
 		if err != nil {
 			log.Printf("update loyalty: %v", err)
 			loyaltyError(w, 500, "Unable to update loyalty")
